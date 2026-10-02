@@ -14,9 +14,10 @@ jobs:
   selftest:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - name: Checkout trusted main
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
           persist-credentials: false
@@ -26,3 +27,22 @@ jobs:
 
       - name: Farm-Agent internal selftest
         run: python3 tools/farm-agent/farm_agent.py selftest --repo-root "$GITHUB_WORKSPACE"
+
+      - name: Security contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PROTECTED_PREFIXES' tools/farm-agent/farm_agent.py
+          grep -q 'REQUEST_ID_CONFLICT' tools/farm-agent/farm_agent.py
+          grep -q 'BUNDLE_HASH_MISMATCH' tools/farm-agent/farm_agent.py
+          grep -q 'REMOTE_MOVED' tools/farm-agent/farm_agent.py
+          grep -q 'TEST_ISOLATION_UNAVAILABLE' tools/farm-agent/farm_agent.py
+          ! grep -n -- '--force' .github/workflows/farm-agent.yml tools/farm-agent/farm_agent.py
+
+      - name: Summary
+        run: |
+          echo "### Farm-Agent Selftest PASS" >> "$GITHUB_STEP_SUMMARY"
+          echo "- agent: `1.0.0-v2.1`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- unit tests: `PASS`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- protected paths: `PASS`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- non-force contract: `PASS`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,116 @@
+name: Farm-Agent Multipart Stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Farm ticket requestId
+        required: true
+        type: string
+      part_index:
+        description: Zero-based part index
+        required: true
+        type: string
+      part_count:
+        description: Total part count
+        required: true
+        type: string
+      part_sha256:
+        description: SHA-256 of ASCII part data
+        required: true
+        type: string
+      bundle_sha256:
+        description: SHA-256 of compressed payload bytes
+        required: true
+        type: string
+      part_data:
+        description: Base64url payload part
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    if: github.repository == 'neidelbert/Farm-Spiel-V2' && github.actor == 'neidelbert'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate and stage part
+        id: part
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+          PART_INDEX: ${{ inputs.part_index }}
+          PART_COUNT: ${{ inputs.part_count }}
+          PART_SHA256: ${{ inputs.part_sha256 }}
+          BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+          PART_DATA: ${{ inputs.part_data }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/farm-part
+          mkdir -p /tmp/farm-part
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+
+          rid = os.environ["REQUEST_ID"]
+          if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{7,127}", rid):
+              raise SystemExit("REQUEST_ID_INVALID")
+
+          try:
+              idx = int(os.environ["PART_INDEX"])
+              count = int(os.environ["PART_COUNT"])
+          except ValueError:
+              raise SystemExit("PART_INDEX_INVALID")
+          if not (1 <= count <= 512) or not (0 <= idx < count):
+              raise SystemExit("PART_INDEX_INVALID")
+
+          part = os.environ["PART_DATA"]
+          if not (1 <= len(part) <= 48000) or not re.fullmatch(r"[A-Za-z0-9_-]+", part):
+              raise SystemExit("PART_DATA_INVALID")
+
+          part_hash = os.environ["PART_SHA256"]
+          bundle_hash = os.environ["BUNDLE_SHA256"]
+          if not re.fullmatch(r"[0-9a-f]{64}", part_hash):
+              raise SystemExit("PART_HASH_INVALID")
+          if not re.fullmatch(r"[0-9a-f]{64}", bundle_hash):
+              raise SystemExit("BUNDLE_HASH_INVALID")
+          actual = hashlib.sha256(part.encode("ascii")).hexdigest()
+          if actual != part_hash:
+              raise SystemExit("PART_HASH_MISMATCH")
+
+          meta = {
+              "requestId": rid,
+              "partIndex": idx,
+              "partCount": count,
+              "partSha256": part_hash,
+              "bundleSha256": bundle_hash,
+          }
+          Path("/tmp/farm-part/part.txt").write_text(part, encoding="ascii")
+          Path("/tmp/farm-part/meta.json").write_text(
+              json.dumps(meta, sort_keys=True, separators=(",", ":")),
+              encoding="utf-8",
+          )
+          name = f"farm-ticket-part-{rid}-{idx:03d}-{part_hash[:16]}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"artifact_name={name}\n")
+          PY
+
+      - name: Upload short-lived part artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.part.outputs.artifact_name }}
+          path: /tmp/farm-part
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Summary
+        run: |
+          echo "### Multipart part staged" >> "$GITHUB_STEP_SUMMARY"
+          echo "- requestId: `${{ inputs.request_id }}`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- part: `${{ inputs.part_index }}/${{ inputs.part_count }}`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- artifact retention: `1 day`" >> "$GITHUB_STEP_SUMMARY"

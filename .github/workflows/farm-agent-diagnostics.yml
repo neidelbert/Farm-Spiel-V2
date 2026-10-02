@@ -1,0 +1,38 @@
+name: Farm-Agent Diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Agent selftest
+        run: python3 tools/farm-agent/farm_agent.py selftest --repo-root "$GITHUB_WORKSPACE"
+
+      - name: Read branch state
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)"
+          DEVELOP_SHA="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/develop | cut -f1)"
+          echo "### Farm-Agent Diagnostics" >> "$GITHUB_STEP_SUMMARY"
+          echo "- agent: `1.0.0-v2.1`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- main: `$MAIN_SHA`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- develop: `$DEVELOP_SHA`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- protected paths: `.github/**`, `tools/farm-agent/**`, `.git/**`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- push policy: `non-force / develop only`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- INLINE: `enabled`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- MULTIPART: `enabled`" >> "$GITHUB_STEP_SUMMARY"

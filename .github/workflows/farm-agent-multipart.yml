@@ -1,10 +1,10 @@
-name: Farm-Agent
+name: Farm-Agent Multipart Finalize
 
 on:
   workflow_dispatch:
     inputs:
-      ticket_json:
-        description: Complete INLINE .farmticket.json
+      ticket_header_json:
+        description: MULTIPART ticket header JSON without payloadParts
         required: true
         type: string
 
@@ -12,12 +12,13 @@ permissions: {}
 
 jobs:
   validate:
-    name: Phase A - Validate and test without write credentials
+    name: Phase A - Assemble, validate and test without contents-write credentials
     if: github.repository == 'neidelbert/Farm-Spiel-V2' && github.actor == 'neidelbert'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
     outputs:
       decision: ${{ steps.validate.outputs.decision }}
       ticket: ${{ steps.validate.outputs.ticket }}
@@ -34,67 +35,51 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Verify trusted repository
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "neidelbert/Farm-Spiel-V2"
-          test "$GITHUB_REF_NAME" = "main"
-
-      - name: Materialize ticket
+      - name: Materialize multipart header
         env:
-          FARM_TICKET_JSON: ${{ inputs.ticket_json }}
-        shell: bash
+          FARM_HEADER_JSON: ${{ inputs.ticket_header_json }}
         run: |
-          set -euo pipefail
           python3 - <<'PY'
           import os
           from pathlib import Path
-          value = os.environ.get("FARM_TICKET_JSON", "")
-          if not value:
-              raise SystemExit("ticket_json is empty")
-          Path("/tmp/farm-ticket.json").write_text(value, encoding="utf-8")
+          Path("/tmp/farm-header.json").write_text(os.environ["FARM_HEADER_JSON"], encoding="utf-8")
           PY
 
-      - name: Fresh credential-free develop checkout
-        shell: bash
+      - name: Assemble verified parts
+        env:
+          FARM_ACTIONS_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          python3 tools/farm-agent/farm_agent.py assemble-multipart \
+            --header-file /tmp/farm-header.json \
+            --output-file /tmp/farm-ticket.json \
+            --github-repository "$GITHUB_REPOSITORY" \
+            --actions-token-env FARM_ACTIONS_TOKEN
+
+      - name: Fresh credential-free develop checkout
+        run: |
           rm -rf /tmp/farm-validate
           git clone --no-tags --branch develop "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/farm-validate
 
-      - name: Validate, apply in disposable workspace and test
+      - name: Validate and test
         id: validate
-        shell: bash
         run: |
-          set -euo pipefail
           python3 tools/farm-agent/farm_agent.py validate \
             --ticket-file /tmp/farm-ticket.json \
             --repo-root /tmp/farm-validate \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Phase A summary
-        shell: bash
-        run: |
-          echo "### Farm-Agent Phase A" >> "$GITHUB_STEP_SUMMARY"
-          echo "- decision: `${{ steps.validate.outputs.decision }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- ticket: `${{ steps.validate.outputs.ticket }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- action: `${{ steps.validate.outputs.action }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- requestId: `${{ steps.validate.outputs.request_id }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- baseSha: `${{ steps.validate.outputs.base_sha }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- bundleSha256: `${{ steps.validate.outputs.bundle_sha256 }}`" >> "$GITHUB_STEP_SUMMARY"
-
   publish:
-    name: Phase B - Fresh publish, no tests or user-code execution
+    name: Phase B - Reassemble fresh and publish
     needs: validate
     if: needs.validate.result == 'success' && needs.validate.outputs.decision == 'NEW'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     concurrency:
       group: farm-agent-develop-publish
       cancel-in-progress: false
     permissions:
       contents: write
+      actions: read
 
     steps:
       - name: Checkout trusted control plane
@@ -103,63 +88,62 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Materialize exact same ticket
+      - name: Materialize multipart header
         env:
-          FARM_TICKET_JSON: ${{ inputs.ticket_json }}
-        shell: bash
+          FARM_HEADER_JSON: ${{ inputs.ticket_header_json }}
         run: |
-          set -euo pipefail
           python3 - <<'PY'
           import os
           from pathlib import Path
-          Path("/tmp/farm-ticket.json").write_text(os.environ["FARM_TICKET_JSON"], encoding="utf-8")
+          Path("/tmp/farm-header.json").write_text(os.environ["FARM_HEADER_JSON"], encoding="utf-8")
           PY
 
-      - name: Fresh develop checkout
-        shell: bash
+      - name: Reassemble and reverify all parts
+        env:
+          FARM_ACTIONS_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          rm -rf /tmp/farm-publish
-          git clone --no-tags --branch develop "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/farm-publish
+          python3 tools/farm-agent/farm_agent.py assemble-multipart \
+            --header-file /tmp/farm-header.json \
+            --output-file /tmp/farm-ticket.json \
+            --github-repository "$GITHUB_REPOSITORY" \
+            --actions-token-env FARM_ACTIONS_TOKEN
 
-      - name: Reverify exact ticket identity
-        shell: bash
+      - name: Verify identity matches Phase A
         env:
           EXPECTED_REQUEST_ID: ${{ needs.validate.outputs.request_id }}
           EXPECTED_BUNDLE: ${{ needs.validate.outputs.bundle_sha256 }}
         run: |
-          set -euo pipefail
           python3 - <<'PY'
           import os, sys
+          from pathlib import Path
           sys.path.insert(0, "tools/farm-agent")
           import farm_agent
-          from pathlib import Path
           t = farm_agent.load_ticket_file(Path("/tmp/farm-ticket.json"))
           _, bundle = farm_agent.decode_ticket_payload(t)
-          assert t["requestId"] == os.environ["EXPECTED_REQUEST_ID"], "requestId changed between phases"
-          assert bundle == os.environ["EXPECTED_BUNDLE"], "bundle changed between phases"
+          assert t["requestId"] == os.environ["EXPECTED_REQUEST_ID"]
+          assert bundle == os.environ["EXPECTED_BUNDLE"]
           PY
+
+      - name: Fresh develop checkout
+        run: |
+          rm -rf /tmp/farm-publish
+          git clone --no-tags --branch develop "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/farm-publish
 
       - name: Publish verified bundle non-force
         id: publish
         env:
           FARM_PUSH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
           python3 tools/farm-agent/farm_agent.py publish \
             --ticket-file /tmp/farm-ticket.json \
             --repo-root /tmp/farm-publish \
             --push-token-env FARM_PUSH_TOKEN \
             --github-output "$GITHUB_OUTPUT"
 
-      - name: Publish summary
-        shell: bash
+      - name: Summary
         run: |
-          echo "### Farm-Agent Phase B" >> "$GITHUB_STEP_SUMMARY"
-          echo "- decision: `${{ steps.publish.outputs.decision }}`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Multipart publish PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "- resultSha: `${{ steps.publish.outputs.result_sha }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- non-force push: `PASS`" >> "$GITHUB_STEP_SUMMARY"
 
   reuse:
     name: Idempotent reuse
@@ -170,7 +154,6 @@ jobs:
     permissions: {}
     steps:
       - run: |
-          echo "### Farm-Agent" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Farm-Agent multipart" >> "$GITHUB_STEP_SUMMARY"
           echo "- decision: `REUSE`" >> "$GITHUB_STEP_SUMMARY"
           echo "- resultSha: `${{ needs.validate.outputs.result_sha }}`" >> "$GITHUB_STEP_SUMMARY"
-          echo "No duplicate commit was created." >> "$GITHUB_STEP_SUMMARY"

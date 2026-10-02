@@ -1,0 +1,106 @@
+{
+  "$id": "https://example.invalid/farm-ticket-v2.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "enum": [
+        "INSTALL",
+        "CLOSE"
+      ]
+    },
+    "baseSha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "changeType": {
+      "enum": [
+        "CONTENT_CHANGE",
+        "DOCS_CHANGE",
+        "ENGINE_CHANGE",
+        "GAMEPLAY_CHANGE",
+        "MAP_CHANGE",
+        "MIXED_FOUNDATION_CHANGE",
+        "TEST_CHANGE",
+        "UI_CHANGE"
+      ]
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "format": {
+      "const": "farm-ticket-v2"
+    },
+    "note": {
+      "type": "string"
+    },
+    "payloadEncoding": {
+      "const": "gzip+base64url"
+    },
+    "payloadLength": {
+      "maximum": 25000000,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "payloadPartSha256": {
+      "items": {
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "maxItems": 512,
+      "minItems": 1,
+      "type": "array"
+    },
+    "payloadParts": {
+      "items": {
+        "maxLength": 48000,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "type": "string"
+      },
+      "maxItems": 512,
+      "minItems": 1,
+      "type": "array"
+    },
+    "payloadSha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "repository": {
+      "const": "neidelbert/Farm-Spiel-V2"
+    },
+    "requestId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$",
+      "type": "string"
+    },
+    "targetBranch": {
+      "const": "develop"
+    },
+    "ticket": {
+      "pattern": "^FS-[0-9]{3}$",
+      "type": "string"
+    },
+    "transport": {
+      "enum": [
+        "INLINE",
+        "MULTIPART"
+      ]
+    }
+  },
+  "required": [
+    "format",
+    "ticket",
+    "action",
+    "repository",
+    "targetBranch",
+    "baseSha",
+    "changeType",
+    "requestId",
+    "payloadEncoding",
+    "payloadLength",
+    "payloadSha256",
+    "transport",
+    "payloadPartSha256"
+  ],
+  "title": "Farm-Spiel V2 FarmTicket",
+  "type": "object"
+}
