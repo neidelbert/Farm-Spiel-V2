@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+.vite/
+__pycache__/
+*.pyc
+.DS_Store
+.farm-agent/

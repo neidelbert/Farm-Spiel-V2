@@ -1,0 +1,28 @@
+name: Farm-Agent Selftest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: farm-agent-selftest
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Python unit tests
+        run: python3 -m unittest discover -s tools/farm-agent/tests -p 'test_*.py' -v
+
+      - name: Farm-Agent internal selftest
+        run: python3 tools/farm-agent/farm_agent.py selftest --repo-root "$GITHUB_WORKSPACE"

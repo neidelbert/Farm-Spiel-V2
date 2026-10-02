@@ -1,0 +1,40 @@
+name: Farm-Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Bootstrap operation
+        required: true
+        default: SELFTEST
+        type: choice
+        options:
+          - SELFTEST
+
+permissions:
+  contents: read
+
+concurrency:
+  group: farm-agent-develop
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Run bootstrap validation
+        run: |
+          python3 -m unittest discover -s tools/farm-agent/tests -p 'test_*.py' -v
+          python3 tools/farm-agent/farm_agent.py selftest --repo-root "$GITHUB_WORKSPACE"
+
+      - name: Status
+        run: |
+          echo "Bootstrap agent is validation-only."
+          echo "Normal FS INSTALL/CLOSE stays disabled until the trusted TOOLS upgrade."
