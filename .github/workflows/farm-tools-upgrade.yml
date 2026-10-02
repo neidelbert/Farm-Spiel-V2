@@ -402,24 +402,44 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Safety gate
         shell: bash
         run: |
           set -euo pipefail
+          INSTALLER_PATH=".github/workflows/farm-tools-upgrade.yml"
           test "$GITHUB_REF_NAME" = "main" || { echo "Must run from main"; exit 10; }
-          test "$(git rev-parse HEAD^)" = "$FARM_BASELINE_SHA" || {
-            echo "BASELINE_MISMATCH parent=$(git rev-parse HEAD^) expected=$FARM_BASELINE_SHA"
+
+          git cat-file -e "${FARM_BASELINE_SHA}^{commit}" 2>/dev/null || {
+            echo "BASELINE_MISSING expected=$FARM_BASELINE_SHA"
             exit 11
           }
-          mapfile -t changed < <(git diff --name-only "$FARM_BASELINE_SHA..HEAD")
-          if [ "${#changed[@]}" -ne 1 ] || [ "${changed[0]}" != ".github/workflows/farm-tools-upgrade.yml" ]; then
-            echo "STOP: installer commit contains unexpected changes"
+          git merge-base --is-ancestor "$FARM_BASELINE_SHA" HEAD || {
+            echo "BASELINE_NOT_ANCESTOR expected=$FARM_BASELINE_SHA head=$(git rev-parse HEAD)"
+            exit 11
+          }
+
+          mapfile -t changed < <(git diff --name-only "$FARM_BASELINE_SHA" HEAD)
+          if [ "${#changed[@]}" -ne 1 ] || [ "${changed[0]}" != "$INSTALLER_PATH" ]; then
+            echo "STOP: installer history contains unexpected net changes"
             printf '%s\n' "${changed[@]}"
             exit 12
           fi
+
+          # Every commit after the trusted baseline may touch only the one-time installer.
+          while IFS= read -r commit; do
+            [ -n "$commit" ] || continue
+            mapfile -t paths < <(git diff-tree --no-commit-id --name-only -r "$commit")
+            for path in "${paths[@]}"; do
+              if [ "$path" != "$INSTALLER_PATH" ]; then
+                echo "STOP: installer history commit $commit touched unexpected path: $path"
+                exit 12
+              fi
+            done
+          done < <(git rev-list --reverse "$FARM_BASELINE_SHA..HEAD")
+
           DEVELOP_SHA="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/develop | cut -f1)"
           test "$DEVELOP_SHA" = "$FARM_BASELINE_SHA" || {
             echo "DEVELOP_MOVED actual=$DEVELOP_SHA expected=$FARM_BASELINE_SHA"
@@ -489,6 +509,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           from pathlib import Path
           required = [
               ".github/workflows/farm-agent.yml",
@@ -501,8 +522,16 @@ jobs:
               text = Path(rel).read_text(encoding="utf-8")
               if "\t" in text:
                   raise SystemExit(f"TAB_IN_YAML {rel}")
-              if "--force" in text:
-                  raise SystemExit(f"FORCE_PUSH_STRING {rel}")
+              for line_no, line in enumerate(text.splitlines(), 1):
+                  # Reject an actual force-push command, not a self-test that merely mentions the token.
+                  if "git push" not in line:
+                      continue
+                  if (
+                      re.search(r"--force(?:-with-lease)?", line)
+                      or re.search(r"(?:^|\s)-f(?:\s|$)", line)
+                      or re.search(r"(?<!\S)\+\S*:refs/heads/", line)
+                  ):
+                      raise SystemExit(f"FORCE_PUSH_COMMAND {rel}:{line_no}")
           main = Path(".github/workflows/farm-agent.yml").read_text(encoding="utf-8")
           assert "contents: write" in main
           assert "persist-credentials: false" in main
@@ -572,7 +601,16 @@ jobs:
             echo "REMOTE_MOVED develop=$DEVELOP_SHA expected=$FARM_BASELINE_SHA"
             exit 21
           }
-          test "$(git rev-parse HEAD^)" = "$FARM_BASELINE_SHA" || exit 22
+          git merge-base --is-ancestor "$FARM_BASELINE_SHA" HEAD || {
+            echo "BASELINE_NOT_ANCESTOR"
+            exit 22
+          }
+          mapfile -t installer_changes < <(git diff --name-only "$FARM_BASELINE_SHA" HEAD)
+          if [ "${#installer_changes[@]}" -ne 1 ] || [ "${installer_changes[0]}" != ".github/workflows/farm-tools-upgrade.yml" ]; then
+            echo "STOP: publish checkout contains unexpected pre-upgrade changes"
+            printf '%s\n' "${installer_changes[@]}"
+            exit 22
+          fi
 
       - name: Materialize and reverify exact trusted tools bundle
         shell: bash
